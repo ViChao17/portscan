@@ -1,0 +1,12 @@
+# Build and test artifacts
+*.test
+*.exe
+*.out
+coverage.*
+/dist/
+
+# Editor / OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
