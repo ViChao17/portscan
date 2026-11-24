@@ -16,11 +16,12 @@ func TestNormalizeHostsDeduplicates(t *testing.T) {
 		"Example.COM",
 		"example.com.",
 		"example.com",
+		"EXAMPLE.COM.",
 	})
 	if err != nil {
 		t.Fatalf("normalizeHosts() error = %v", err)
 	}
-	if got, want := len(inputs), 3; got != want {
+	if got, want := len(inputs), 4; got != want {
 		t.Fatalf("len(inputs) = %d, want %d: %+v", got, want, inputs)
 	}
 	if inputs[0].ip == nil || !inputs[0].ip.Equal(net.ParseIP("127.0.0.1")) {
@@ -31,6 +32,9 @@ func TestNormalizeHostsDeduplicates(t *testing.T) {
 	}
 	if inputs[2].ip != nil || inputs[2].host != "Example.COM" {
 		t.Fatalf("third input = %+v, want the DNS name Example.COM", inputs[2])
+	}
+	if inputs[3].ip != nil || inputs[3].host != "example.com." {
+		t.Fatalf("fourth input = %+v, want the absolute DNS name example.com.", inputs[3])
 	}
 }
 

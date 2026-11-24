@@ -328,7 +328,7 @@ func TestDuplicateHostsAreScannedOnce(t *testing.T) {
 	}))
 
 	results := collect(t, mustScan(t, scanner, context.Background(),
-		[]string{"dup.test", "DUP.test", "dup.test."}, Range(80, 82)))
+		[]string{"dup.test", "DUP.test", " dup.test "}, Range(80, 82)))
 
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3: %+v", len(results), results)

@@ -103,7 +103,7 @@ func New(opts ...Option) (*Scanner, error) {
 // delivery (backpressure) until the context is canceled, which keeps memory
 // usage bounded.
 func (s *Scanner) Scan(ctx context.Context, hosts []string, ports PortSet) (<-chan Result, error) {
-	_, out, err := s.start(ctx, hosts, ports)
+	_, out, err := s.start(ctx, hosts, ports, deliveryCancelable)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func (s *Scanner) Scan(ctx context.Context, hosts []string, ports PortSet) (<-ch
 // their real state and the missing ones are reported as StateCanceled. The
 // returned error is non-nil only for setup failures.
 func (s *Scanner) ScanAll(ctx context.Context, hosts []string, ports PortSet) ([]Result, error) {
-	plan, out, err := s.start(ctx, hosts, ports)
+	plan, out, err := s.start(ctx, hosts, ports, deliveryGuaranteed)
 	if err != nil {
 		return nil, err
 	}
@@ -147,8 +147,16 @@ type scanPlan struct {
 	ports   []uint16
 }
 
+// deliveryMode separates cancellation of network work from result delivery.
+type deliveryMode uint8
+
+const (
+	deliveryCancelable deliveryMode = iota
+	deliveryGuaranteed
+)
+
 // start validates the input, resolves hosts and launches the scan goroutines.
-func (s *Scanner) start(ctx context.Context, hosts []string, ports PortSet) (*scanPlan, <-chan Result, error) {
+func (s *Scanner) start(ctx context.Context, hosts []string, ports PortSet, mode deliveryMode) (*scanPlan, <-chan Result, error) {
 	if ctx == nil {
 		return nil, nil, ErrNilContext
 	}
@@ -166,13 +174,13 @@ func (s *Scanner) start(ctx context.Context, hosts []string, ports PortSet) (*sc
 
 	plan := &scanPlan{targets: targets, ports: ports.ports}
 	out := make(chan Result, s.concurrency)
-	go s.run(ctx, plan, out)
+	go s.run(ctx, plan, out, mode)
 	return plan, out, nil
 }
 
 // run drives the scan: a fixed pool of workers consumes jobs produced by feed,
 // and the results channel is closed exactly once after every worker exits.
-func (s *Scanner) run(ctx context.Context, plan *scanPlan, out chan<- Result) {
+func (s *Scanner) run(ctx context.Context, plan *scanPlan, out chan<- Result, mode deliveryMode) {
 	defer close(out)
 
 	jobs := make(chan job, s.concurrency)
@@ -181,23 +189,29 @@ func (s *Scanner) run(ctx context.Context, plan *scanPlan, out chan<- Result) {
 	for range s.concurrency {
 		go func() {
 			defer wg.Done()
-			s.work(ctx, jobs, out)
+			s.work(ctx, jobs, out, mode)
 		}()
 	}
 
-	s.feed(ctx, plan, jobs, out)
+	s.feed(ctx, plan, jobs, out, mode)
 	close(jobs)
 	wg.Wait()
 }
 
 // feed emits jobs until the plan is exhausted or the context is canceled.
 // Hosts that failed to resolve are reported immediately, without a job.
-func (s *Scanner) feed(ctx context.Context, plan *scanPlan, jobs chan<- job, out chan<- Result) {
+func (s *Scanner) feed(ctx context.Context, plan *scanPlan, jobs chan<- job, out chan<- Result, mode deliveryMode) {
 	for _, target := range plan.targets {
+		if ctx.Err() != nil {
+			return
+		}
 		if target.err != nil {
 			for _, port := range plan.ports {
+				if ctx.Err() != nil {
+					return
+				}
 				result := Result{Host: target.host, Port: port, State: StateError, Err: target.err}
-				if !send(ctx, out, result) {
+				if !send(ctx, out, result, mode) {
 					return
 				}
 			}
@@ -205,6 +219,9 @@ func (s *Scanner) feed(ctx context.Context, plan *scanPlan, jobs chan<- job, out
 		}
 		for _, ip := range target.ips {
 			for _, port := range plan.ports {
+				if ctx.Err() != nil {
+					return
+				}
 				select {
 				case jobs <- job{host: target.host, ip: ip, port: port}:
 				case <-ctx.Done():
@@ -216,9 +233,14 @@ func (s *Scanner) feed(ctx context.Context, plan *scanPlan, jobs chan<- job, out
 }
 
 // work consumes jobs and publishes one result per job.
-func (s *Scanner) work(ctx context.Context, jobs <-chan job, out chan<- Result) {
+func (s *Scanner) work(ctx context.Context, jobs <-chan job, out chan<- Result, mode deliveryMode) {
 	for j := range jobs {
-		send(ctx, out, s.check(ctx, j))
+		if ctx.Err() != nil {
+			return
+		}
+		if !send(ctx, out, s.check(ctx, j), mode) {
+			return
+		}
 	}
 }
 
@@ -251,11 +273,16 @@ func (s *Scanner) check(ctx context.Context, j job) Result {
 	}
 }
 
-// send delivers a result, preferring an available buffer slot. When the
-// consumer is slow it blocks until the result is delivered or the context is
-// canceled; the last attempt after cancellation is best-effort so that a
-// completed check is not thrown away gratuitously.
-func send(ctx context.Context, out chan<- Result, result Result) bool {
+// send always delivers completed results to ScanAll, whose collector drains
+// the channel even after cancellation. Scan uses cancelable delivery because
+// its caller may stop receiving; the last attempt after cancellation is
+// best-effort so that a completed check is not thrown away gratuitously.
+func send(ctx context.Context, out chan<- Result, result Result, mode deliveryMode) bool {
+	if mode == deliveryGuaranteed {
+		out <- result
+		return true
+	}
+
 	select {
 	case out <- result:
 		return true

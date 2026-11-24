@@ -37,22 +37,35 @@ func (s *Scanner) resolveTargets(ctx context.Context, hosts []string) ([]hostTar
 	sem := make(chan struct{}, min(len(inputs), s.concurrency))
 
 	var wg sync.WaitGroup
+dispatch:
 	for i, in := range inputs {
+		if ctx.Err() != nil {
+			break dispatch
+		}
 		switch {
 		case in.err != nil:
 			targets[i] = hostTarget{host: in.host, err: in.err}
 		case in.ip != nil:
 			targets[i] = hostTarget{host: in.host, ips: []net.IP{in.ip}}
 		default:
+			// Reserve capacity before starting a goroutine so waiting hosts do
+			// not each require a goroutine of their own.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break dispatch
+			}
+			if ctx.Err() != nil {
+				<-sem
+				break dispatch
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				select {
-				case sem <- struct{}{}:
-				case <-ctx.Done():
+				defer func() { <-sem }()
+				if ctx.Err() != nil {
 					return
 				}
-				defer func() { <-sem }()
 				targets[i] = s.resolveOne(ctx, in.host)
 			}()
 		}
@@ -143,7 +156,8 @@ func normalizeHosts(hosts []string) ([]hostInput, error) {
 			continue
 		}
 
-		key := "dns:" + strings.ToLower(strings.TrimSuffix(host, "."))
+		// A trailing dot makes a DNS name absolute, so it is part of the key.
+		key := "dns:" + strings.ToLower(host)
 		if _, ok := seen[key]; ok {
 			continue
 		}

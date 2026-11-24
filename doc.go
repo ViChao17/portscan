@@ -33,15 +33,19 @@
 //
 // # Cancellation
 //
-// Cancellation is cooperative and driven by context.Context. After the context
-// is canceled no new checks are started, in-flight dials are aborted, the
-// results channel is closed, and checks that were in flight report
-// StateCanceled. Ports that were never started are not reported by Scan.
-// ScanAll fills such gaps with StateCanceled results.
+// Cancellation is cooperative and driven by context.Context. Producers and
+// workers stop dispatching checks once they observe cancellation; the same
+// context also interrupts in-flight network operations. The results channel
+// is closed after all senders finish. Scan delivers remaining results on a
+// best-effort basis after cancellation and does not report unstarted checks.
+// ScanAll keeps every completed result and fills unreported combinations with
+// StateCanceled (or the corresponding host-level resolution error).
 //
 // A caller that stops reading from the results channel must cancel the context;
 // otherwise the scan goroutines block on delivery (backpressure) until it is
-// canceled. This bounds memory usage regardless of the number of targets.
+// canceled. Work and result queues are bounded by the configured concurrency;
+// target storage still grows with the input. ScanAll additionally stores the
+// full result set. Concurrency limits apply independently to each scan call.
 //
 // # Errors
 //

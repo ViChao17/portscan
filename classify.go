@@ -22,7 +22,7 @@ func classifyDialError(err error, ctxErr error) State {
 		// A scan-wide cancellation explains the failure better than an
 		// ambiguous socket error.
 		return StateCanceled
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.Canceled):
 		return StateCanceled
 	}
 

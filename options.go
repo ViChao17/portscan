@@ -27,7 +27,9 @@ type config struct {
 type Option func(*config) error
 
 // WithConcurrency sets the maximum number of TCP connect attempts that may run
-// at the same time. The value must be at least 1. The default is 100.
+// at the same time within one Scan or ScanAll call. Concurrent calls have
+// independent limits. DNS resolution uses the same per-call limit.
+// The value must be at least 1. The default is 100.
 func WithConcurrency(n int) Option {
 	return func(c *config) error {
 		if n < 1 {
@@ -52,6 +54,8 @@ func WithConnectTimeout(d time.Duration) Option {
 
 // WithResolver replaces the DNS resolver used for non-IP hosts. A nil resolver
 // is rejected. The default is net.DefaultResolver.
+// A custom resolver must be safe for concurrent calls and honor ctx so that
+// cancellation can stop resolution and wait for all resolver calls to finish.
 func WithResolver(r Resolver) Option {
 	return func(c *config) error {
 		if r == nil {
